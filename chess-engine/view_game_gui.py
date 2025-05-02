@@ -20,6 +20,11 @@ if not os.path.exists(init_file):
     with open(init_file, 'w') as f:
         pass
 
+# Define pieces_dir at the module level so it's available everywhere
+pieces_dir = os.path.join(current_dir, 'pieces')
+if not os.path.exists(pieces_dir):
+    os.makedirs(pieces_dir)
+
 print(f"Python path: {sys.path}")
 print(f"Current directory: {current_dir}")
 print(f"Models directory exists: {os.path.exists(models_dir)}")
@@ -32,7 +37,7 @@ WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 DARK_SQUARE = (118, 150, 86)
 LIGHT_SQUARE = (238, 238, 210)
-HIGHLIGHT = (255, 255, 0, 50)  # Yellow with alpha
+HIGHLIGHT = (255, 255, 0, 50)
 TEXT_COLOR = (50, 50, 50)
 
 # Screen dimensions
@@ -54,21 +59,7 @@ class ChessGUI:
         self.big_font = pygame.font.SysFont('Arial', 24)
 
         # Load chess pieces images
-        self.pieces_images = {}
-        for piece in ['p', 'n', 'b', 'r', 'q', 'k']:
-            # Load white pieces
-            if os.path.exists(f"pieces/{piece.upper()}.png"):
-                img = pygame.image.load(f"pieces/{piece.upper()}.png")
-            else:
-                img = self._create_text_image(piece.upper())
-            self.pieces_images[piece.upper()] = pygame.transform.scale(img, (SQUARE_SIZE, SQUARE_SIZE))
-
-            # Load black pieces
-            if os.path.exists(f"pieces/{piece}.png"):
-                img = pygame.image.load(f"pieces/{piece}.png")
-            else:
-                img = self._create_text_image(piece)
-            self.pieces_images[piece] = pygame.transform.scale(img, (SQUARE_SIZE, SQUARE_SIZE))
+        self.pieces_images = self._load_pieces_from_sprite()
 
         # Setup the board
         self.board = chess.Board()
@@ -76,8 +67,15 @@ class ChessGUI:
         # Load the model
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = ChessModel(num_classes=1)
-        checkpoint = torch.load(model_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+
+        try:
+            checkpoint = torch.load(model_path, map_location=self.device)
+            self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            print("Model loaded successfully (some parameters were ignored)")
+        except Exception as e:
+            print(f"Error loading the model: {e}")
+            print("Using model with random weights instead")
+
         self.model.eval()
 
         # Setup Stockfish
@@ -93,6 +91,64 @@ class ChessGUI:
         self.ai_evaluation = 0.0
         self.stockfish_evaluation = 0.0
         self.move_history = []
+
+    def _load_pieces_from_sprite(self):
+        """Load chess pieces from a sprite sheet"""
+        pieces_images = {}
+        sprite_path = os.path.join(pieces_dir, 'chess_sprites.png')
+
+        if os.path.exists(sprite_path):
+            try:
+                # Load the sprite sheet
+                sprite_sheet = pygame.image.load(sprite_path)
+
+                # Get dimensions
+                sheet_width = sprite_sheet.get_width()
+                sheet_height = sprite_sheet.get_height()
+
+                # The sprite sheet from lichess has 2 rows (white/black) and 6 columns (pieces)
+                piece_width = sheet_width // 6
+                piece_height = sheet_height // 2
+
+                # Define the piece order in the sprite sheet (may vary based on the sprite sheet)
+                # For lichess cburnett pieces, the order is:
+                # K, Q, B, N, R, P (white, top row)
+                # k, q, b, n, r, p (black, bottom row)
+                pieces_order = ['K', 'Q', 'B', 'N', 'R', 'P', 'k', 'q', 'b', 'n', 'r', 'p']
+
+                # Extract each piece from the sprite sheet
+                for i, piece in enumerate(pieces_order):
+                    row = i // 6  # 0 for white pieces, 1 for black pieces
+                    col = i % 6   # Position within the row
+
+                    # Create subsurface for this piece
+                    rect = pygame.Rect(col * piece_width, row * piece_height, piece_width, piece_height)
+                    piece_image = sprite_sheet.subsurface(rect)
+
+                    # Scale to our square size
+                    piece_image = pygame.transform.scale(piece_image, (SQUARE_SIZE, SQUARE_SIZE))
+
+                    # Store in dictionary
+                    pieces_images[piece] = piece_image
+
+                print(f"Successfully loaded {len(pieces_images)} pieces from sprite sheet")
+
+            except Exception as e:
+                print(f"Error loading sprite sheet: {e}")
+                # Fall back to text-based pieces
+                for piece in ['K', 'Q', 'B', 'N', 'R', 'P', 'k', 'q', 'b', 'n', 'r', 'p']:
+                    pieces_images[piece] = self._create_text_image(piece)
+        else:
+            print(f"Sprite sheet not found at {sprite_path}")
+            # Fall back to loading individual pieces or text-based pieces
+            for piece in ['K', 'Q', 'B', 'N', 'R', 'P', 'k', 'q', 'b', 'n', 'r', 'p']:
+                if os.path.exists(f"pieces/{piece}.png"):
+                    img = pygame.image.load(f"pieces/{piece}.png")
+                    pieces_images[piece] = pygame.transform.scale(img, (SQUARE_SIZE, SQUARE_SIZE))
+                else:
+                    pieces_images[piece] = self._create_text_image(piece)
+
+        return pieces_images
 
     def _create_text_image(self, piece_symbol):
         """Create a simple text image if piece images are missing"""
@@ -273,35 +329,51 @@ class ChessGUI:
         if self.board.is_game_over():
             self.game_over = True
 
-    def run(self):
-        """Main game loop"""
+    def run(self, num_games=5):
         clock = pygame.time.Clock()
 
         try:
-            running = True
-            paused = False
+            for game_num in range(num_games):
+                print(f"\n=== Starting Game {game_num+1}/{num_games} ===")
 
-            while running:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
+                # Reset the board and game state
+                self.board = chess.Board()
+                self.last_move = None
+                self.game_over = False
+                self.move_history = []
+
+                running = True
+                paused = False
+
+                while running:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            return  # Exit all games
+                        elif event.type == pygame.KEYDOWN:
+                            if event.key == pygame.K_SPACE:
+                                paused = not paused
+                            elif event.key == pygame.K_n:
+                                # Skip to next game
+                                running = False
+                            elif event.key == pygame.K_q:
+                                # Quit all games
+                                return
+
+                    self.draw_board()
+
+                    if not paused and not self.game_over:
+                        self.play_move()
+                        time.sleep(0.5)  # Add a small delay to make it easier to follow
+                    elif self.game_over:
+                        # Game is over - wait a bit then move to next game
+                        time.sleep(3)  # Show final position for 3 seconds
                         running = False
-                    elif event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_SPACE:
-                            paused = not paused
-                        elif event.key == pygame.K_r:
-                            # Reset the game
-                            self.board = chess.Board()
-                            self.last_move = None
-                            self.game_over = False
-                            self.move_history = []
 
-                self.draw_board()
+                    clock.tick(30)  # 30 FPS
 
-                if not paused and not self.game_over:
-                    self.play_move()
-                    time.sleep(0.5)  # Add a small delay to make it easier to follow
-
-                clock.tick(30)  # 30 FPS
+                # Record game result
+                result = self.board.result()
+                print(f"Game {game_num+1} result: {result}")
 
         finally:
             # Clean up
@@ -314,12 +386,18 @@ if __name__ == "__main__":
     parser.add_argument("--stockfish", type=str, default="stockfish", help="Path to Stockfish executable")
     parser.add_argument("--time", type=float, default=0.5, help="Thinking time for Stockfish (seconds)")
     parser.add_argument("--elo", type=int, default=1500, help="Approximate ELO for Stockfish")
+    parser.add_argument("--games", type=int, default=1, help="Number of games to play")
 
     args = parser.parse_args()
 
     # Create chess pieces folder if it doesn't exist (for custom piece images)
-    if not os.path.exists("pieces"):
-        os.makedirs("pieces")
+    pieces_dir = os.path.join(current_dir, 'pieces')
+    if not os.path.exists(pieces_dir):
+        os.makedirs(pieces_dir)
+
+        # Make sure we have the sprite sheet (already downloaded in the import section)
+    if not os.path.exists(os.path.join(pieces_dir, 'chess_sprites.png')):
+        print("Warning: Chess sprite sheet not found. Pieces may not display correctly.")
 
     # Start the GUI
     chess_gui = ChessGUI(

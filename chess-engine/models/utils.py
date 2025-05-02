@@ -43,20 +43,36 @@ def evaluate_position(board, model):
 
         return evaluation
 
-def minimax(board, depth, alpha, beta, is_maximizing, model, position_history=None):
-    """Minimax algorithm with alpha-beta pruning."""
-    if depth == 0 or board.is_game_over():
-        return evaluate_position(board, model)
+def minimax(board, depth, alpha, beta, maximizing_player, model, position_history=None):
+    # Check for game over
+    if board.is_game_over():
+        if board.is_checkmate():
+            return -10000 if maximizing_player else 10000
+        # Draw
+        return 0
 
-    # Check for threefold repetition
-    if position_history:
-        current_fen = board.fen().split(' ')[0]  # Just the piece positions
-        if sum(1 for fen in position_history if fen.split(' ')[0] == current_fen) >= 2:
-            return 0  # Draw evaluation for repetition
+    # Add position repetition detection
+    if position_history is not None:
+        current_pos = board.fen().split(' ')[0]  # Just the piece positions
+        pos_count = 0
+        for pos in position_history:
+            if pos.split(' ')[0] == current_pos:
+                pos_count += 1
+                if pos_count >= 2:  # We're about to repeat a position a third time
+                    return 0  # Avoid repetition
 
-    if is_maximizing:
+    # Reached the maximum depth, evaluate with quiescence search instead of just static eval
+    if depth == 0:
+        return quiescence_search(board, model, alpha, beta)
+
+    if maximizing_player:
         max_eval = float('-inf')
-        for move in board.legal_moves:
+
+        # Move ordering - examine captures first
+        moves = list(board.legal_moves)
+        moves.sort(key=lambda m: 10 if board.is_capture(m) else 0, reverse=True)
+
+        for move in moves:
             board.push(move)
             if position_history is not None:
                 position_history.append(board.fen())
@@ -69,12 +85,19 @@ def minimax(board, depth, alpha, beta, is_maximizing, model, position_history=No
 
             max_eval = max(max_eval, eval)
             alpha = max(alpha, eval)
+
             if beta <= alpha:
                 break
+
         return max_eval
     else:
         min_eval = float('inf')
-        for move in board.legal_moves:
+
+        # Move ordering - examine captures first
+        moves = list(board.legal_moves)
+        moves.sort(key=lambda m: 10 if board.is_capture(m) else 0, reverse=True)
+
+        for move in moves:
             board.push(move)
             if position_history is not None:
                 position_history.append(board.fen())
@@ -87,25 +110,71 @@ def minimax(board, depth, alpha, beta, is_maximizing, model, position_history=No
 
             min_eval = min(min_eval, eval)
             beta = min(beta, eval)
+
             if beta <= alpha:
                 break
+
         return min_eval
 
-def find_best_move(board, model, depth=3, position_history=None):
-    """Find the best move using minimax with alpha-beta pruning."""
+def find_best_move(board, model, depth=5, position_history=None):
+
     best_move = None
     best_eval = float('-inf')
     alpha = float('-inf')
     beta = float('inf')
 
-    # For early game, add some randomness to the moves
+    # For early game, consider standard opening moves rather than pure randomness
     if board.fullmove_number < 5:
-        legal_moves = list(board.legal_moves)
-        if legal_moves:
-            return random.choice(legal_moves)
+        # Standard opening book for first few moves
+        if board.fen().split(' ')[0] == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR" and board.turn == chess.WHITE:
+            # Starting position as White - use common openings
+            common_first_moves = [
+                chess.Move.from_uci("e2e4"),  # King's Pawn
+                chess.Move.from_uci("d2d4"),  # Queen's Pawn
+                chess.Move.from_uci("c2c4"),  # English Opening
+                chess.Move.from_uci("g1f3")   # Reti Opening
+            ]
+            for move in common_first_moves:
+                if move in board.legal_moves:
+                    return move
 
-    # Iterate through all legal moves
-    for move in board.legal_moves:
+        # Or if responding to 1.e4 as Black
+        if board.fen().split(' ')[0] == "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR" and board.turn == chess.BLACK:
+            common_responses = [
+                chess.Move.from_uci("e7e5"),  # Open Game
+                chess.Move.from_uci("c7c5"),  # Sicilian Defense
+                chess.Move.from_uci("e7e6")   # French Defense
+            ]
+            for move in common_responses:
+                if move in board.legal_moves:
+                    return move
+
+    # Get list of legal moves
+    moves = list(board.legal_moves)
+
+    # Move ordering - examine captures and checks first for better pruning
+    ordered_moves = []
+    for move in moves:
+        # Give captures a higher priority (simple MVV-LVA)
+        if board.is_capture(move):
+            ordered_moves.append((move, 10))
+        # Then look at checks
+        else:
+            # Check if move gives check
+            board.push(move)
+            gives_check = board.is_check()
+            board.pop()
+
+            if gives_check:
+                ordered_moves.append((move, 5))
+            else:
+                ordered_moves.append((move, 0))
+
+    # Sort moves by score, highest first
+    ordered_moves.sort(key=lambda x: x[1], reverse=True)
+
+    # Iterate through all legal moves in priority order
+    for move, _ in ordered_moves:
         board.push(move)
         if position_history is not None:
             position_history.append(board.fen())
@@ -125,6 +194,10 @@ def find_best_move(board, model, depth=3, position_history=None):
         # Update alpha
         alpha = max(alpha, eval)
 
+    # If we somehow didn't find a best move, pick a random one
+    if best_move is None and moves:
+        best_move = random.choice(moves)
+
     return best_move
 
 def result_to_value(result, turn):
@@ -137,3 +210,28 @@ def result_to_value(result, turn):
         return -1.0 if turn else 1.0
     else:  # Draw ('1/2-1/2')
         return 0.0
+
+def quiescence_search(board, model, alpha, beta, depth=3):
+    stand_pat = evaluate_position(board, model)
+
+    if depth == 0:
+        return stand_pat
+
+    if stand_pat >= beta:
+                return beta
+    if alpha < stand_pat:
+        alpha = stand_pat
+
+            # Consider only capture moves
+    for move in board.legal_moves:
+        if board.is_capture(move):
+            board.push(move)
+            score = -quiescence_search(board, model, -beta, -alpha, depth-1)
+            board.pop()
+
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+
+    return alpha

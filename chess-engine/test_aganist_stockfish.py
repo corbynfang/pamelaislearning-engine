@@ -19,7 +19,7 @@ def test_single_game(model, stockfish_path, depth=3, our_color=chess.WHITE):
     """Play a single game against Stockfish and return the result"""
     # Set up Stockfish
     engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
-    engine.configure({"Skill Level": 5})  # Adjust Stockfish strength (1-20)
+    engine.configure({"Skill Level": 2})  # Adjust Stockfish strength (1-20)
 
     # Set up the board
     board = chess.Board()

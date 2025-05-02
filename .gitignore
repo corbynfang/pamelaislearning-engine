@@ -2,3 +2,5 @@ chess-engine/data/pgn
 chess-engine/data/pgn/*.pgn
 PlotNeuralNet/
 chess-engine/PlotNeuralNet/
+plot_neural_network.py
+path/to/plot_neural_net.py

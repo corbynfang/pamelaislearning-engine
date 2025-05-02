@@ -1,2 +1,4 @@
 chess-engine/data/pgn
 chess-engine/data/pgn/*.pgn
+PlotNeuralNet/
+chess-engine/PlotNeuralNet/

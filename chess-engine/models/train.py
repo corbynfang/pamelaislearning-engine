@@ -13,19 +13,23 @@ class ChessModel(nn.Module):
     def __init__(self):
         super(ChessModel, self).__init__()
         self.conv_layers = nn.Sequential(
+            # Input: 12 channels (pieces) -> 64 features
             nn.Conv2d(12, 64, 3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
+            # 64 -> 128 features
             nn.Conv2d(64, 128, 3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
+            # 128 -> 64 features
             nn.Conv2d(128, 64, 3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU()
         )
+
         self.fc_layers = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64 * 8 * 8, 256),
+            nn.Linear(64 * 8 * 8, 256),  # 64 features * 8 * 8 board size
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(256, 1),
@@ -54,6 +58,14 @@ def board_to_tensor(board):
             rank = 7 - chess.square_rank(square)
             file = chess.square_file(square)
             tensor[idx][rank][file] = 1.0
+
+            # Add piece mobility bonus
+            if piece.piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
+                tensor[idx][rank][file] += 0.2 if piece.color else -0.2
+
+            # Add center control bonus for central squares
+            if 2 <= file <= 5 and 2 <= rank <= 5:
+                tensor[idx][rank][file] += 0.1 if piece.color else -0.1
 
     return tensor
 
@@ -141,6 +153,7 @@ class ChessDataset(torch.utils.data.Dataset):
 # Simple training function
 def train_model(pgn_dir, output_path, max_games=5000, max_positions=50000,
                epochs=10, batch_size=64, learning_rate=0.001, min_elo=0, sample_rate=0.1):
+
     # Create dataset and split into train/validation
     dataset = ChessDataset(pgn_dir, max_games, max_positions, min_elo, sample_rate)
     train_size = int(0.8 * len(dataset))
@@ -159,12 +172,16 @@ def train_model(pgn_dir, output_path, max_games=5000, max_positions=50000,
     # Training components
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2)
 
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
 
     # Training loop
     best_val_loss = float('inf')
+    patience = 5
+    no_improve = 0
+
     for epoch in range(epochs):
         # Training phase
         model.train()
@@ -207,6 +224,12 @@ def train_model(pgn_dir, output_path, max_games=5000, max_positions=50000,
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), output_path)
             print(f"Model saved with validation loss: {best_val_loss:.4f}")
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                print("Early Stopping")
+                break
 
     print("Training complete!")
     return model
